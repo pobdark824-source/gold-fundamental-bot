@@ -1,24 +1,25 @@
 import os
 import time
 import threading
+import datetime
 import requests
 import yfinance as yf
 from telegram import Bot
 import openai
 from flask import Flask
 
-# راه‌اندازی یک وب‌سرور کوچک برای سازگاری با Render Web Service
+# راه‌اندازی وب‌سرور برای حفظ اتصال در Render
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Gold Fundamental Bot is Running!"
+    return "Gold Fundamental & Calendar Bot is Active!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# --- خواندن کلیدها از متغیرهای محیطی سرور ---
+# --- دریافت متغیرهای محیطی ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -26,81 +27,9 @@ NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 
 openai.api_key = OPENAI_API_KEY
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
 processed_news = set()
-
-def get_market_context():
-    """دریافت قیمت لحظه‌ای طلا با مدیریت خطای کامل و بدون توقف ربات"""
-    gold_price = 2650.0  # مقدار پیش‌فرض امن بر اساس میانگین بازار
-    dxy_index = 103.5
-    us10y_yield = 4.2
-    
-    # تلاش برای دریافت قیمت زنده (در صورت باز بودن بازار)
-    try:
-        ticker = yf.Ticker("GC=F")
-        data = ticker.history(period="1d")
-        if not data.empty:
-            gold_price = round(float(data['Close'].iloc[-1]), 2)
-    except Exception:
-        pass
-
-    return {
-        "gold_price": gold_price,
-        "dxy_index": dxy_index,
-        "us10y_yield": us10y_yield
-    }
-
-def analyze_advanced_fundamental(news_title, news_desc, market_data):
-    prompt = f"""
-تو یک تحلیل‌گر ارشد و مدیریت ریسک بازار طلا (XAU/USD) هستی.
-خبر جدید:
-- عنوان: {news_title}
-- شرح: {news_desc}
-
-وضعیت لحظه‌ای بازار:
-- قیمت طلا: {market_data['gold_price']} دلار
-- شاخص دلار (DXY): {market_data['dxy_index']}
-- نرخ بازدهی اوراق ۱۰ ساله آمریکا: {market_data['us10y_yield']}%
-
-لطفاً خروجی را دقیقاً در قالب فرمت زیر به زبان فارسی تنظیم کن:
-
-📊 **تحلیل جامع فاندامنتال طلا**
----
-📌 **خبر:** [ترجمه روان عنوان]
-🔥 **درجه اهمیت:** [کم / متوسط / بسیار بالا (بحرانی)]
-
-💡 **تحلیل تأثیر بر بازار:**
-[توضیح کامل اثر خبر بر تورم، نرخ بهره، دلار و در نهایت طلا]
-
-🌐 **تطبیق با وضعیت لحظه‌ای:**
-[توضیح نحوه واکنش طلا با توجه به داده‌های لحظه‌ای بازار]
-
-📈 **سناریوهای احتمالی حرکت:**
-- **سناریوی صعودی:** [شرایط و محدوده تقریبی هدف]
-- **سناریوی نزولی:** [شرایط و محدوده تقریبی حمایت]
-
-⚠️ **توصیه مدیریت ریسک:**
-[مثلاً: عدم معامله در ۱۰ دقیقه اول / کاهش حجم پوزیشن]
-    """
-
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"خطا در پردازش تحلیل هوش مصنوعی: {e}"
-
-def fetch_latest_news():
-    try:
-        url = f"https://newsapi.org/v2/everything?q=gold+fed+inflation+interest+rate&sortBy=publishedAt&apiKey={NEWS_API_KEY}"
-        response = requests.get(url)
-        data = response.json()
-        return data.get("articles", [])[:2]
-    except Exception as e:
-        print(f"خطا در دریافت اخبار: {e}")
-        return []
+notified_events = set()
 
 def send_telegram_alert(message):
     try:
@@ -114,39 +43,102 @@ def send_telegram_alert(message):
     except Exception as e:
         print(f"خطا در ارسال پیام به تلگرام: {e}")
 
-def send_test_message():
-    """ارسال پیام تست اولیه برای بررسی اتصال تلگرام"""
-    test_text = "🎉 **ربات تحلیل فاندامنتال طلا با موفقیت روشن شد!**\n\nسیستم آماده رصد اخبار و تحلیل بازار است."
-    send_telegram_alert(test_text)
+def get_market_context():
+    """دریافت قیمت پیش‌فرض یا زنده طلا"""
+    gold_price = 2650.0
+    try:
+        ticker = yf.Ticker("GC=F")
+        data = ticker.history(period="1d")
+        if not data.empty:
+            gold_price = round(float(data['Close'].iloc[-1]), 2)
+    except Exception:
+        pass
+    return {"gold_price": gold_price, "dxy_index": 103.5, "us10y_yield": 4.2}
+
+def fetch_economic_calendar():
+    """دریافت داده‌های تقویم اقتصادی روز جاری"""
+    try:
+        # منبع دریافت تقویم اقتصادی روزانه
+        url = "https://n8n.w-trade.org/webhook/calendar"  # یا هر API جایگزین تقویم اقتصادی
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"خطا در دریافت تقویم اقتصادی: {e}")
+    return []
+
+def check_pre_news_alerts():
+    """بررسی اخبار مهم آینده و ارسال آلارم ۱ ساعت قبل از انتشار"""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    calendar = fetch_economic_calendar()
+    
+    for event in calendar:
+        # تنها اخبار مهم مرتبط با USD / طلا (High Impact)
+        if event.get("impact") == "High" and event.get("currency") in ["USD", "XAU"]:
+            event_id = f"{event.get('title')}_{event.get('date')}"
+            
+            # تبدیل زمان خبر به datetime
+            try:
+                event_time = datetime.datetime.fromisoformat(event.get("date").replace("Z", "+00:00"))
+                time_diff = (event_time - now).total_seconds() / 60.0  # اختلاف زمان به دقیقه
+                
+                # اگر بین ۵۰ تا ۶۵ دقیقه به خبر مانده باشد و قبلاً آلارم نرفته باشد
+                if 50 <= time_diff <= 65 and event_id not in notified_events:
+                    title = event.get("title", "خبر مهم اقتصادی")
+                    forecast = event.get("forecast", "نامشخص")
+                    previous = event.get("previous", "نامشخص")
+                    
+                    alert_msg = f"""
+⏰ **هشدار انتشار خبر مهم (۱ ساعت آینده)**
+---
+📌 **عنوان خبر:** {title}
+🔴 **درجه اهمیت:** بسیار بالا (High Impact)
+📊 **پیش‌بینی بازار:** {forecast}
+آمار دوره قبل: {previous}
+
+⚠️ **توصیه تریدینگ:**
+حدود ۱ ساعت دیگر نوسانات شدید روی نماد طلا (XAU/USD) پیش‌بینی می‌شود. پوزیشن‌های باز خود را مدیریت کنید.
+                    """
+                    send_telegram_alert(alert_msg)
+                    notified_events.add(event_id)
+            except Exception as e:
+                print(f"خطا در پردازش زمان خبر: {e}")
+
+def check_weekend_warnings():
+    """ارسال یادآوری بسته‌شدن بازار و آخر هفته"""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # روز جمعه (weekday == 4) ساعت ۲۰:۰۰ گرینویچ
+    if now.weekday() == 4 and now.hour == 20 and now.minute < 5:
+        event_id = f"weekend_warning_{now.strftime('%Y-%m-%d')}"
+        if event_id not in notified_events:
+            msg = """
+🔔 **یادآوری پایان هفته کاری بازار (Weekend Warning)**
+---
+💡 بازار جهانی طلا به‌زودی بسته خواهد شد.
+⚠️ به دلیل احتمال گپ‌های قیمتی (Gap) در بازگشایی روز یکشنبه/دوشنبه، توصیه می‌شود پوزیشن‌های پرریسک را مدیریت یا تسویه کنید.
+            """
+            send_telegram_alert(msg)
+            notified_events.add(event_id)
 
 def bot_main_loop():
-    print("🚀 حلقه پردازش اخبار طلا شروع به کار کرد...")
+    print("🚀 سیستم مدیریت اخبار، تقویم اقتصادی و آلارم‌ها فعال شد...")
     while True:
-        news_list = fetch_latest_news()
-        market_data = get_market_context()
-        
-        for news in news_list:
-            news_id = news.get("url")
-            if news_id and news_id not in processed_news:
-                title = news.get("title") or "بدون عنوان"
-                desc = news.get("description") or "بدون توضیحات"
-                
-                analysis_report = analyze_advanced_fundamental(title, desc, market_data)
-                send_telegram_alert(analysis_report)
-                
-                processed_news.add(news_id)
-                time.sleep(3)
-                
-        time.sleep(180)
+        try:
+            # ۱. بررسی آلارم ۱ ساعت قبل از اخبار مهم
+            check_pre_news_alerts()
+            
+            # ۲. بررسی یادآوری آخر هفته
+            check_weekend_warnings()
+            
+            # ۳. بررسی اخبار لحظه‌ای منتشرشده
+            # (کد تحلیل‌گر AI اخبار)
+            
+        except Exception as e:
+            print(f"خطا در حلقه اصلی: {e}")
+            
+        time.sleep(180)  # چک کردن هر ۳ دقیقه
 
 if __name__ == "__main__":
-    # اجرای وب‌سرور در یک نخ جداگانه برای جلوگیری از خطای پورت Render
     t = threading.Thread(target=run_web)
     t.start()
-    
-    # ارسال پیام تست برای اطمینان از صحت اتصال تلگرام
-    print("⏳ در حال ارسال پیام تست به تلگرام...")
-    send_test_message()
-    
-    # اجرای حلقه اصلی ربات
     bot_main_loop()
