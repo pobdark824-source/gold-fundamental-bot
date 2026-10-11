@@ -34,7 +34,6 @@ def get_market_context():
     dxy_index = "N/A"
     us10y_yield = "N/A"
     
-    # تلاش برای دریافت قیمت طلا با چند نماد مختلف (برای جلوگیری از خطای delisted)
     for symbol in ["GC=F", "XAU=X"]:
         try:
             ticker = yf.Ticker(symbol)
@@ -45,14 +44,12 @@ def get_market_context():
         except Exception:
             continue
 
-    # دریافت شاخص دلار (DXY)
     try:
         dxy = yf.Ticker("DX-Y.NYB").history(period="1d")['Close'].iloc[-1]
         dxy_index = round(float(dxy), 2)
     except Exception:
         pass
 
-    # دریافت اوراق قرضه ۱۰ ساله
     try:
         us10y = yf.Ticker("^TNX").history(period="1d")['Close'].iloc[-1]
         us10y_yield = round(float(us10y), 2)
@@ -130,6 +127,11 @@ def send_telegram_alert(message):
     except Exception as e:
         print(f"خطا در ارسال پیام به تلگرام: {e}")
 
+def send_test_message():
+    """ارسال پیام تست اولیه برای بررسی اتصال تلگرام"""
+    test_text = "🎉 **ربات تحلیل فاندامنتال طلا با موفقیت روشن شد!**\n\nسیستم آماده رصد اخبار و تحلیل بازار است."
+    send_telegram_alert(test_text)
+
 def bot_main_loop():
     print("🚀 حلقه پردازش اخبار طلا شروع به کار کرد...")
     while True:
@@ -151,9 +153,13 @@ def bot_main_loop():
         time.sleep(180)
 
 if __name__ == "__main__":
-    # اجرای وب‌سرور در یک نخ جداگانه (Thread) برای جلوگیری از خطای پورت Render
+    # اجرای وب‌سرور در یک نخ جداگانه برای جلوگیری از خطای پورت Render
     t = threading.Thread(target=run_web)
     t.start()
     
-    # اجرای ربات اصلی
+    # ارسال پیام تست برای اطمینان از صحت اتصال تلگرام
+    print("⏳ در حال ارسال پیام تست به تلگرام...")
+    send_test_message()
+    
+    # اجرای حلقه اصلی ربات
     bot_main_loop()
