@@ -1,27 +1,34 @@
 import os
 import time
+import threading
 import requests
 import yfinance as yf
 from telegram import Bot
 import openai
+from flask import Flask
 
-# --- خواندن کلیدها از متغیرهای محیطی سرور (امنیت بالا) ---
+# راه‌اندازی یک وب‌سرور کوچک برای سازگاری با Render Web Service
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Gold Fundamental Bot is Running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# --- خواندن کلیدها از متغیرهای محیطی سرور ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 
-# تنظیم کلید OpenAI
 openai.api_key = OPENAI_API_KEY
-
-# راه‌اندازی ربات تلگرام
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-# لیست اخبار پردازش‌شده برای جلوگیری از ارسال تکراری
 processed_news = set()
 
 def get_market_context():
-    """دریافت قیمت لحظه‌ای طلا، شاخص دلار و اوراق قرضه ۱۰ ساله"""
     try:
         gold = yf.Ticker("GC=F").history(period="1d")['Close'].iloc[-1]
         dxy = yf.Ticker("DX-Y.NYB").history(period="1d")['Close'].iloc[-1]
@@ -37,7 +44,6 @@ def get_market_context():
         return {"gold_price": "N/A", "dxy_index": "N/A", "us10y_yield": "N/A"}
 
 def analyze_advanced_fundamental(news_title, news_desc, market_data):
-    """تحلیل حرفه‌ای ترکیبی: فاندامنتال + داده‌های بازار در لحظه با OpenAI"""
     prompt = f"""
 تو یک تحلیل‌گر ارشد و مدیریت ریسک بازار طلا (XAU/USD) هستی.
 خبر جدید:
@@ -76,12 +82,11 @@ def analyze_advanced_fundamental(news_title, news_desc, market_data):
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2
         )
-        return response.choices.message.content
+        return response.choices[0].message.content
     except Exception as e:
         return f"خطا در پردازش تحلیل هوش مصنوعی: {e}"
 
 def fetch_latest_news():
-    """دریافت آخرین اخبار مرتبط با طلا از NewsAPI"""
     try:
         url = f"https://newsapi.org/v2/everything?q=gold+fed+inflation+interest+rate&sortBy=publishedAt&apiKey={NEWS_API_KEY}"
         response = requests.get(url)
@@ -92,7 +97,6 @@ def fetch_latest_news():
         return []
 
 def send_telegram_alert(message):
-    """ارسال پیام به تلگرام به صورت همگام (Synchronous)"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
@@ -104,8 +108,8 @@ def send_telegram_alert(message):
     except Exception as e:
         print(f"خطا در ارسال پیام به تلگرام: {e}")
 
-def main():
-    print("🚀 ربات پیشرفته تحلیل فاندامنتال طلا روشن شد...")
+def bot_main_loop():
+    print("🚀 حلقه پردازش اخبار طلا شروع به کار کرد...")
     while True:
         news_list = fetch_latest_news()
         market_data = get_market_context()
@@ -116,17 +120,18 @@ def main():
                 title = news.get("title") or "بدون عنوان"
                 desc = news.get("description") or "بدون توضیحات"
                 
-                # تحلیل خبر و داده‌های بازار
                 analysis_report = analyze_advanced_fundamental(title, desc, market_data)
-                
-                # ارسال به تلگرام
                 send_telegram_alert(analysis_report)
                 
                 processed_news.add(news_id)
                 time.sleep(3)
                 
-        # بررسی اخبار جدید هر ۳ دقیقه (۱۸۰ ثانیه)
         time.sleep(180)
 
 if __name__ == "__main__":
-    main()
+    # اجرای وب‌سرور در یک نخ جداگانه (Thread) برای جلوگیری از خطای پورت Render
+    t = threading.Thread(target=run_web)
+    t.start()
+    
+    # اجرای ربات اصلی
+    bot_main_loop()
