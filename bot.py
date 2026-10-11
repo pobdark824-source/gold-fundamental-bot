@@ -29,19 +29,41 @@ bot = Bot(token=TELEGRAM_BOT_TOKEN)
 processed_news = set()
 
 def get_market_context():
+    """دریافت قیمت لحظه‌ای طلا و داده‌های بازار با مدیریت خطای پیشرفته"""
+    gold_price = "N/A"
+    dxy_index = "N/A"
+    us10y_yield = "N/A"
+    
+    # تلاش برای دریافت قیمت طلا با چند نماد مختلف (برای جلوگیری از خطای delisted)
+    for symbol in ["GC=F", "XAU=X"]:
+        try:
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(period="1d")
+            if not data.empty:
+                gold_price = round(float(data['Close'].iloc[-1]), 2)
+                break
+        except Exception:
+            continue
+
+    # دریافت شاخص دلار (DXY)
     try:
-        gold = yf.Ticker("GC=F").history(period="1d")['Close'].iloc[-1]
         dxy = yf.Ticker("DX-Y.NYB").history(period="1d")['Close'].iloc[-1]
+        dxy_index = round(float(dxy), 2)
+    except Exception:
+        pass
+
+    # دریافت اوراق قرضه ۱۰ ساله
+    try:
         us10y = yf.Ticker("^TNX").history(period="1d")['Close'].iloc[-1]
+        us10y_yield = round(float(us10y), 2)
+    except Exception:
+        pass
         
-        return {
-            "gold_price": round(float(gold), 2),
-            "dxy_index": round(float(dxy), 2),
-            "us10y_yield": round(float(us10y), 2)
-        }
-    except Exception as e:
-        print(f"خطا در دریافت داده‌های بازار: {e}")
-        return {"gold_price": "N/A", "dxy_index": "N/A", "us10y_yield": "N/A"}
+    return {
+        "gold_price": gold_price,
+        "dxy_index": dxy_index,
+        "us10y_yield": us10y_yield
+    }
 
 def analyze_advanced_fundamental(news_title, news_desc, market_data):
     prompt = f"""
