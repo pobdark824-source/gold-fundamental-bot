@@ -3,3 +3,4 @@ requests
 openai
 yfinance
 beautifulsoup4
+flask
