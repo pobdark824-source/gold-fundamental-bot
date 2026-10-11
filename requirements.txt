@@ -1,0 +1,5 @@
+python-telegram-bot
+requests
+openai
+yfinance
+beautifulsoup4
