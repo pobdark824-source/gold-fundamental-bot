@@ -7,13 +7,14 @@ import yfinance as yf
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import openai
 
 # --- راه‌اندازی وب‌سرور Flask برای حفظ اتصال در Render ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Gold Fundamental, Calendar & Health Check Bot is Active!"
+    return "Gold Fundamental, News & Health Check Bot is Active!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -23,11 +24,14 @@ def run_web():
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 
+openai.api_key = OPENAI_API_KEY
+processed_news = set()
 notified_events = set()
 
 def send_telegram_alert_sync(message):
-    """تابع کمکی برای ارسال پیام همگام (Sync) به تلگرام"""
+    """تابع کمکی برای ارسال پیام همگام به تلگرام"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
@@ -52,6 +56,7 @@ async def health_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
         pass
 
     ai_status = "✅ فعال (کلید تنظیم شده)" if OPENAI_API_KEY else "❌ تنظیم نشده"
+    news_status = "✅ فعال" if NEWS_API_KEY else "❌ تنظیم نشده"
     now_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
 
     status_message = f"""
@@ -60,6 +65,7 @@ async def health_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
 🤖 **وضعیت سرویس:** ربات کاملاً زنده و آنلاین است (`Online`)
 🌐 **وضعیت اتصال بازار (Yahoo):** {market_status}
 🧠 **وضعیت هوش مصنوعی (OpenAI):** {ai_status}
+📰 **وضعیت سرویس اخبار (NewsAPI):** {news_status}
 ⏰ **زمان سرور:** {now_time}
 ⚙️ **پلتفرم میزبان:** Render (Web Service)
 
@@ -67,49 +73,68 @@ async def health_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
     """
     await update.message.reply_text(status_message, parse_mode="Markdown")
 
-def fetch_economic_calendar():
-    """دریافت داده‌های تقویم اقتصادی روز جاری"""
+def analyze_with_ai(news_title, news_desc):
+    """تحلیل خبر با استفاده از هوش مصنوعی OpenAI"""
+    if not OPENAI_API_KEY:
+        return f"📌 **عنوان:** {news_title}\n\n{news_desc}"
+    
     try:
-        url = "https://n8n.w-trade.org/webhook/calendar"
+        prompt = f"""
+تو یک تحلیلگر حرفه‌ای بازارهای مالی (طلا و فارکس) هستی. خبر زیر منتشر شده است:
+عنوان: {news_title}
+توضیحات: {news_desc}
+
+لطفاً به زبان فارسی، به صورت کوتاه و حرفه‌ای تحلیل کن که این خبر چه تاثیری روی قیمت طلا (XAU/USD) و شاخص دلار می‌گذارد. ساختار پاسخ شامل:
+۱. خلاصه خبر
+۲. تاثیر روی طلا (صعودی/نزولی/خنثی)
+۳. سطح اهمیت
+"""
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+            temperature=0.3
+        )
+        return response.choices[0].message['content'].strip()
+    except Exception as e:
+        print(f"خطا در تحلیل هوش مصنوعی: {e}")
+        return f"📌 **{news_title}**\n\n{news_desc}"
+
+def fetch_and_send_live_news():
+    """دریافت اخبار لحظه‌ای از NewsAPI و ارسال تحلیل به تلگرام"""
+    if not NEWS_API_KEY:
+        return
+    
+    try:
+        url = f"https://newsapi.org/v2/everything?q=gold+OR+federal+reserve+OR+inflation+OR+forex&language=en&sortBy=publishedAt&apiKey={NEWS_API_KEY}"
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        print(f"خطا در دریافت تقویم اقتصادی: {e}")
-    return []
-
-def check_pre_news_alerts():
-    """بررسی اخبار مهم آینده و ارسال آلارم ۱ ساعت قبل از انتشار"""
-    now = datetime.datetime.now(datetime.timezone.utc)
-    calendar = fetch_economic_calendar()
-    
-    for event in calendar:
-        if event.get("impact") == "High" and event.get("currency") in ["USD", "XAU"]:
-            event_id = f"{event.get('title')}_{event.get('date')}"
-            try:
-                event_time = datetime.datetime.fromisoformat(event.get("date").replace("Z", "+00:00"))
-                time_diff = (event_time - now).total_seconds() / 60.0
+            articles = response.json().get("articles", [])
+            for article in articles[:3]: # بررسی ۳ خبر آخر
+                title = article.get("title")
+                desc = article.get("description") or ""
+                url_link = article.get("url")
                 
-                if 50 <= time_diff <= 65 and event_id not in notified_events:
-                    title = event.get("title", "خبر مهم اقتصادی")
-                    forecast = event.get("forecast", "نامشخص")
-                    previous = event.get("previous", "نامشخص")
+                if title and title not in processed_news:
+                    processed_news.add(title)
+                    # محدودسازی حجم حافظه پردازش‌شده‌ها
+                    if len(processed_news) > 100:
+                        processed_news.pop()
+                        
+                    # تحلیل با هوش مصنوعی
+                    ai_analysis = analyze_with_ai(title, desc)
                     
-                    alert_msg = f"""
-⏰ **هشدار انتشار خبر مهم (۱ ساعت آینده)**
+                    message = f"""
+🚨 **تحلیل خبر جدید بازار**
 ---
-📌 **عنوان خبر:** {title}
-🔴 **درجه اهمیت:** بسیار بالا (High Impact)
-📊 **پیش‌بینی بازار:** {forecast}
-آمار دوره قبل: {previous}
+{ai_analysis}
 
-⚠️ **توصیه تریدینگ:**
-حدود ۱ ساعت دیگر نوسانات شدید روی نماد طلا (XAU/USD) پیش‌بینی می‌شود. پوزیشن‌های باز خود را مدیریت کنید.
+🔗 [مشاهده خبر اصلی]({url_link})
                     """
-                    send_telegram_alert_sync(alert_msg)
-                    notified_events.add(event_id)
-            except Exception as e:
-                print(f"خطا در پردازش زمان خبر: {e}")
+                    send_telegram_alert_sync(message)
+                    break # هر بار یک خبر جدید برای جلوگیری از اسپم
+    except Exception as e:
+        print(f"خطا در دریافت اخبار لحظه‌ای: {e}")
 
 def check_weekend_warnings():
     """ارسال یادآوری بسته‌شدن بازار و آخر هفته"""
@@ -127,22 +152,22 @@ def check_weekend_warnings():
             notified_events.add(event_id)
 
 def background_tasks_loop():
-    """حلقه پس‌زمینه برای بررسی دوره‌ای اخبار و تقویم اقتصادی"""
-    print("⏳ حلقه پس‌زمینه اخبار و آلارم‌ها شروع به کار کرد...")
+    """حلقه پس‌زمینه برای بررسی دوره‌ای اخبار و هشدارها"""
+    print("⏳ حلقه پس‌زمینه اخبار و مانیتورینگ شروع به کار کرد...")
     while True:
         try:
-            check_pre_news_alerts()
+            fetch_and_send_live_news()
             check_weekend_warnings()
         except Exception as e:
             print(f"خطا در حلقه پس‌زمینه: {e}")
-        time.sleep(180)  # هر ۳ دقیقه یک‌بار
+        time.sleep(300)  # بررسی هر ۵ دقیقه یک‌بار
 
 def main():
     # ۱. راه‌اندازی ترد وب‌سرور Flask برای Render
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
 
-    # ۲. راه‌اندازی ترد وظایف پس‌زمینه (تقویم اقتصادی و آلارم‌ها)
+    # ۲. راه‌اندازی ترد وظایف پس‌زمینه (اخبار و مانیتورینگ)
     bg_thread = threading.Thread(target=background_tasks_loop, daemon=True)
     bg_thread.start()
 
